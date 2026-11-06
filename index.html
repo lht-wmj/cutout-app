@@ -374,7 +374,7 @@ const state = {
   tool:'', brush:42,
   cssW:0, cssH:0, scale:1, tx:0, ty:0,
   pinch:false, drawing:false, compareOn:false, compareUrl:null,
-  batch:[]
+  batchEditIndex:null, batch:[]
 };
 
 let toastTimer = null;
@@ -961,11 +961,31 @@ $('btnSave').addEventListener('click', ()=>{
   if(state.bgType !== 'none') ctx.drawImage(bgCanvas, 0, 0);
   ctx.drawImage(fgCanvas, 0, 0);
   out.toBlob(blob=>{
+    if(state.batchEditIndex != null){
+      const item = state.batch[state.batchEditIndex];
+      if(item){
+        item.blob = blob;
+        item.status = 'done'; item.pct = 100;
+        setBatchUi(item, 'done', '已精修');
+        updateBatchSummary();
+      }
+      state.batchEditIndex = null;
+      showView('batch');
+      toast('已更新到批量结果，可继续下一张或直接打包下载');
+      return;
+    }
     downloadBlob(blob, baseName(state.fileName)+'_抠图.png');
     toast('已开始下载，iPhone 若未自动保存，可长按图片选择“存储图像”');
   }, 'image/png');
 });
-$('editorBack').addEventListener('click', ()=>showView('home'));
+$('editorBack').addEventListener('click', ()=>{
+  if(state.batchEditIndex != null){
+    state.batchEditIndex = null;
+    showView('batch');
+  }else{
+    showView('home');
+  }
+});
 
 /* ============================================================
  * 十、批量处理
@@ -996,7 +1016,8 @@ function renderBatchList(){
       '<div class="bi-main"><div class="bi-name"></div>' +
       '<div class="bi-status"><span class="stxt">等待处理</span></div>' +
       '<div class="bi-bar"><i style="width:0%"></i></div></div>' +
-      '<div class="bi-actions"><button class="retry hidden" aria-label="重试"></button>' +
+      '<div class="bi-actions"><button class="edit hidden" aria-label="精修"></button>' +
+      '<button class="retry hidden" aria-label="重试"></button>' +
       '<button class="save hidden" aria-label="保存"></button></div>';
     el.querySelector('.bi-name').textContent = item.name;
     item.thumbUrl = URL.createObjectURL(item.file);
@@ -1004,8 +1025,10 @@ function renderBatchList(){
     const ui = {
       status:el.querySelector('.bi-status'), stxt:el.querySelector('.stxt'),
       bar:el.querySelector('.bi-bar i'), retry:el.querySelector('.retry'),
-      save:el.querySelector('.save')
+      save:el.querySelector('.save'), edit:el.querySelector('.edit')
     };
+    ui.edit.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg>';
+    ui.edit.addEventListener('click', ()=>editBatchItem(idx));
     ui.retry.innerHTML = '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 109-9 9 9 0 00-6.7 3L3 8"/><path d="M3 4v4h4"/></svg>';
     ui.save.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 4v11m0 0l-4-4m4 4l4-4"/><path d="M5 19h14"/></svg>';
     ui.retry.addEventListener('click', ()=>retryItem(idx));
@@ -1023,13 +1046,40 @@ function setBatchUi(item, status, txt){
   ui.stxt.textContent = txt;
   if(status === 'done'){
     ui.bar.style.width = '100%';
-    ui.save.classList.remove('hidden'); ui.retry.classList.add('hidden');
+    ui.save.classList.remove('hidden'); ui.retry.classList.add('hidden'); ui.edit.classList.remove('hidden');
   }else if(status === 'fail'){
     ui.retry.classList.remove('hidden'); ui.save.classList.add('hidden');
   }else if(status === 'run' && item.pct){
     ui.bar.style.width = item.pct+'%';
   }
 }
+/**
+ * 从批量结果进入单张精修。
+ * 直接复用已经算好的抠图结果，不再重跑模型：既省时间，也保证同一张图
+ * 精修前后边缘一致（重跑会因为缩放细节差异让边缘轻微变化）。
+ */
+function editBatchItem(idx){
+  const item = state.batch[idx];
+  if(!item || !item.cutCanvas || !item.srcCanvas){ toast('这张还没有处理结果'); return; }
+
+  resetEditor();
+  showView('editor');
+  state.batchEditIndex = idx;
+  state.fileName = item.name;
+  state.srcCanvas = item.srcCanvas;
+  $('editorTitle').textContent = item.name + '（批量精修）';
+
+  initMask(item.cutCanvas);
+  if(state.compareUrl) URL.revokeObjectURL(state.compareUrl);
+  state.compareUrl = URL.createObjectURL(item.file);
+  $('compareLayer').src = state.compareUrl;
+
+  setupCanvasGeometry();
+  $('emptyTip').classList.add('hidden');
+  renderAll();
+  toast('可直接擦除、换底、调边距，保存后自动更新到批量结果');
+}
+
 async function processBatchItem(item){
   item.status = 'run';
   setBatchUi(item, 'run', '处理中 0%');
@@ -1040,6 +1090,7 @@ async function processBatchItem(item){
       item.pct = Math.round(p*100);
       setBatchUi(item, 'run', '下载模型 '+item.pct+'%');
     });
+    item.srcCanvas = src; item.cutCanvas = cut;
     item.blob = await new Promise(r=>cut.toBlob(r,'image/png'));
     item.status = 'done'; item.pct = 100;
     setBatchUi(item, 'done', '已完成');

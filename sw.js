@@ -1,7 +1,7 @@
 /* 智能抠图 PWA Service Worker
  * 只缓存同源 App Shell；模型/WASM 等跨域大文件由应用自身的
  * IndexedDB 分片缓存机制处理，SW 直接透传，避免重复占用空间。 */
-const CACHE_VERSION = 'cutout-pwa-v1';
+const CACHE_VERSION = 'cutout-pwa-v2';
 const APP_SHELL = [
   './',
   './index.html',
